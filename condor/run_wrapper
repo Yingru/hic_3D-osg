@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# job identification number
+id=0
+# check if id is given as input parameter
+if [ $# -ne 0]
+then
+  id=$1
+fi
+
+argsFile=PbPb2760.input
+
+tar -xzf hic_3D-osg.tar.gz
+cp $argsFile hic_3D-osg/bin/
+sleep 2
+
+# load necessary modules
+source /cvmfs/oasis.opensciencegrid.org/osg/modules/lmod/current/init/bash
+module load python/3.5.2 all-pkgs gcc boost hdf5 || exit 1
+
+# start run hydro events
+cd hic_3D-osg/bin/
+./run-events $argsFile $id
+
+cd ../../
+tar czf results$id.tar.gz hic_3D-osg/bin/Results
+mv hic_3D-osg/bin/result$id.hdf5 .

@@ -1,0 +1,2 @@
+trento_args = --reduced-thickness 0.0 --fluctuation 2.0 --nucleon-width 0.59 --mean-coeff 0.0 --std-coeff 2.9 --skew-coeff 7.3 --jacobian 0.75 --normalization 150.0
+hydro_args = etaS=0.08 etaS_slope=0.75 zetaS=1.1
