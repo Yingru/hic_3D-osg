@@ -1,0 +1,12 @@
+[submodule "models/trento"]
+	path = models/trento
+	url = git@github.com:Yingru/trento.git
+[submodule "models/vhlle"]
+	path = models/vhlle
+	url = git@github.com:Yingru/vhlle.git
+[submodule "models/frzout"]
+	path = models/frzout
+	url = git@github.com:Yingru/frzout.git
+[submodule "models/urqmd-afterburner"]
+	path = models/urqmd-afterburner
+	url = git@github.com:Yingru/urqmd-afterburner.git
