@@ -16,7 +16,7 @@ import h5py
 import sys, os
 
 # load libries distributed with hic-osg
-sys.path.insert(1, '../lib64/python3.5/site-packages/')
+sys.path.insert(1, '../lib/python3.5/site-packages/')
 import frzout
 
 def run_cmd(*args, **kwargs):
@@ -206,7 +206,7 @@ def preprocess_data(ievent, nsamples):
    
 
 
-nevent = 2
+nevent = 10
 collision_sys = 'Pb Pb'
 beam_energy = 2760
 xy_max = 13.05
