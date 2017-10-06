@@ -21,10 +21,12 @@ if [[ $(hostname) == 'xd-login.opensciencegrid.org' ]]; then
 
   # set c++ and fortran compiler flags
   export CXXFLAGS="-march=x86-64 -mtune=intel"
-  export FFLAGS="$CXXFLAGS"
+  #export FFLAGS="$CXXFLAGS"
+  export FFLALGS="-march=x86-64"
 
   # explicitly set fortran compiler to override cmake default
-  export FC='gfortran'
+  #export FC='gfortran'
+  export FC='/usr/bin/gfortran'
 
   # set linker flags to prefer the module versions of libraries to the system versions
   # the linker reads $LIBRARY_PATH but gives it lower priority than the standard paths
@@ -71,8 +73,8 @@ for i in models/*/; do
 done
 
 # install the event runner script
-mkdir $pkgdir/bin/Results/
-cp models/run-events $pkgdir/bin
+mkdir $pkgdir/Results/
+cp models/run-events $pkgdir/
 
 # create tgz for distributing to each job
 tar --verbose --create --gzip --file $pkgname.tar.gz \
