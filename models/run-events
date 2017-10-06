@@ -162,7 +162,7 @@ def preprocess_data(ievent, nsamples):
     species = [('pion',211), ('kaon', 321), ('proton', 2212)]
 
     charged = (charge != 0)
-    midrapidity = (np.fabs(eta) < 0.5)
+    midrapidity = (np.fabs(y) < 0.5)
     cenkey = (np.fabs(eta) < 0.8)
 
     group.attrs.create('nsamples', nsamples)
@@ -207,8 +207,8 @@ def preprocess_data(ievent, nsamples):
 
 
 nevent = 10
-collision_sys = 'Pb Pb'
-beam_energy = 2760
+collision_sys = 'p Pb'
+beam_energy = 5020
 xy_max = 13.05
 ic_dxy = 0.1
 eta_max = 10.

@@ -16,7 +16,7 @@ sleep 2
 
 # load necessary modules
 source /cvmfs/oasis.opensciencegrid.org/osg/modules/lmod/current/init/bash
-module load python/3.5.2 all-pkgs gcc boost hdf5 || exit 1
+module load gsl/1.16 python/3.5.2 all-pkgs gcc cmake boost hdf5 || exit 1
 
 # start run hydro events
 cd hic_3D/bin/
