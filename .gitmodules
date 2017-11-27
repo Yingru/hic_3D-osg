@@ -10,9 +10,9 @@
 [submodule "models/urqmd-afterburner"]
 	path = models/urqmd-afterburner
 	url = git@github.com:Yingru/urqmd-afterburner.git
-[submodule "models/diffusion"]
-	path = models/diffusion
-	url = git@github.com:Yingru/diffusion.git
 [submodule "models/HQ_sample"]
 	path = models/HQ_sample
 	url = git@github.com:Yingru/HQ_sample.git
+[submodule "models/diffusion"]
+	path = models/diffusion
+	url = git@github.com:Yingru/diffusion.git
