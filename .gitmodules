@@ -16,3 +16,9 @@
 [submodule "models/diffusion"]
 	path = models/diffusion
 	url = git@github.com:Yingru/diffusion.git
+[submodule "models/fragPLUSrecomb"]
+	path = models/fragPLUSrecomb
+	url = git@github.com:Yingru/fragPLUSrecomb.git
+[submodule "models/bmsap"]
+	path = models/bmsap
+	url = git@github.com:Yingru/bmsap.git
