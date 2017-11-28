@@ -1,258 +1,711 @@
 #!/usr/bin/env python3
 
 """
-run full space-time evolution in heavy-ion collisions:
-    -- initial condition (trento3d)
-    -- hydro (vhlle)
-    -- particlization (frzout)
-    -- hadronic afterburner (UrQMD)
+run full space-time HQ evolution in heavy-ion collisions:
+    --- initial condition (trento + HQ_sample)
+    --- hydro (3+1D vHLLE)
+    --- HQ transport (Langevin)
+    --- HQ hadronization (fragment + recomb)
+    --- light hadron particalization (frzout)
+    --- hadronic afterburner (UrQMD)
 """
 
 from itertools import chain
 import subprocess
 import numpy as np
-import shutil
-import h5py
 import sys, os
+import h5py
+import shutil
+from scipy.interpolate import interp1d
 
 # load libries distributed with hic-osg
-sys.path.insert(1, '../lib/python3.5/site-packages/')
+sys.path.insert(1, './lib64/python3.5/site-packages/')
 import frzout
 
 def run_cmd(*args, **kwargs):
     print(*args, flush=True)
-    subprocess.check_call(
-        list(chain.from_iterable(a.split() for a in args)),
-        **kwargs
-    )
+    subprocess.check_call(list(chain.from_iterable(a.split() for a in args)), **kwargs)
+
 
 def read_text_file(fileName):
-    with open(fileName, 'rb') as f:
-        return [l.split() for l in f if not l.startswith(b'#')]
+    with open(fileName, 'r') as f:
+        result = [l.split() for l in f if not l.startswith('#')]
+
+    ID, charge, mass, px, py, pz, y, eta, ipT, wt = (
+        np.array(col, dtype=dtype) for (col, dtype) in 
+        zip(zip(*result), (2*[int] + 8*[float]))
+    )
+
+    return (ID, charge, px, py, pz, y, eta, ipT)
 
 
-def run_initial(nevent, trento_args):
-    """
-    run initial condition with trento
-    input: nevent(int)--total events in this job; trento_args (string)--trento arguments
-    output: .dat files in initialDir folder
-    """
-    initialDir = 'IC'
-    run_cmd('./trento3d ', collision_sys, str(nevent), '--beam-energy {} --xy-max {} --xy-step {} --eta-max {} --eta-step {} --output {}'.format(beam_energy, xy_max, ic_dxy, eta_max, ic_deta, initialDir), trento_args)
-   
-   
-def run_hydro(ievent, hydro_args):
-    """
-    run hydro for ievent in range(nevent)
-    input: ievent (int); hydro_args (python dict)--hydro arguments
-    output: hypersurface file in freezeout/$ievent/freezeout.dat 
-    """
-    initialFile = 'IC/{}.dat'.format(ievent)
-    eosFile = 'eos/eos_hotQCD.dat'
-
-    # create hydro config file
-    fstream = """outputDir freezeout/{}
-    icInputFile {}
-    eosFile     {}
-    eosType     3
-    e_crit      {}
-    etaS        {}
-    etaS_slope  {}
-    zetaS       {}
-    nx          81
-    ny          81
-    nz          41
-    xmin        -16.0
-    xmax        16.0
-    ymin        -16.0
-    ymax        16.0
-    etamin      -8.0
-    etamax      8.0
-    tau0        0.6
-    tauMax      30.0
-    dtau        0.1
-    icModel     5
-    ic_nxy      {}
-    ic_neta     {}
-    ic_dxy      {}
-    ic_deta     {}
-    """.format(ievent, initialFile, eosFile, hydro_args.get('eswitch', 0.3),
-            hydro_args.get('etaS', 0.08), hydro_args.get('etaS_slope', 0.), hydro_args.get('zetaS', 0.), 
-            ic_nxy, ic_neta, ic_dxy, ic_deta)
-    configFile = '3D_crossTerms.conf'
-    with open(configFile, 'w') as f:
-        f.write(fstream)
-    f.close() 
-       
-    run_cmd('./vhlle ', configFile)
+def read_oscar_file(fileName):
+    try:
+        with open(fileName, 'r') as f:
+            result = [l.replace('D','E').split() for l in f if len(l.split()) == 19]
+        NUM, ID, px, py, pz, p0, mass, rx, ry, rz, r0, temp, c_vx, c_vy, c_vz, ed, ip0, ipT, wt = (
+            np.array(col, dtype=dtype) for (col, dtype) in
+            zip(zip(*result), (2*[int]+17*[float]))
+        )
+    except ValueError as e:
+        handle = str(e).split()[-1]
+        try:
+            with open(fileName, 'r') as f:
+                result = [l.replace('D','E').replace(handle, ' 0 ').split() for l in f if len(l.split()) == 19]
+            NUM, ID, px, py, pz, p0, mass, rx, ry, rz, r0, temp, c_vx, c_vy, c_vz, ed, ip0, ipT, wt = (
+                np.array(col, dtype=dtype) for (col, dtype) in
+                zip(zip(*result), (2*[int]+17*[float]))
+            )
+        except ValueError as e2:
+            handle2 = str(e2).split()[-1]
+            with open(fileName, 'r') as f:
+                result = [l.replace('D','E').replace(handle, ' 0 ').replace(handle2, ' 0 ').split() for l in f if len(l.split()) == 19]
+            NUM, ID, px, py, pz, p0, mass, rx, ry, rz, r0, temp, c_vx, c_vy, c_vz, ed, ip0, ipT, wt = (
+                np.array(col, dtype=dtype) for (col, dtype) in
+                zip(zip(*result), (2*[int]+17*[float]))
+            )
+    return ID, px, py, pz, p0, ipT
 
 
-def run_afterburner(ievent, hrg):
+def run_initial(collision_sys, nevents):
+    if collision_sys == 'PbPb5020':
+        run_cmd('./trento3d Pb Pb', str(nevents),
+            '--beam-energy 5020',
+            '--reduced-thickness 0.0 --fluctuation 2.0 --nucleon-width 0.59 --normalization 15.0',
+            '--mean-coeff 0.0 --std-coeff 2.9 --skew-coeff 7.3 --jacobian 0.75',
+            '--xy-max 13.05 --xy-step 0.1',
+            '--eta-max 10.0 --eta-step 0.2',
+            '--output initial', cwd='trento3d'
+        )
+
+
+def run_hydro():
+    run_cmd('./vhlle vhlle.conf', cwd='vhlle')
+
+
+def run_HQsample():
+    run_cmd('./HQ_sample HQ_sample.conf', cwd='HQ_sample')
+
+
+def run_diffusion(args):
+    os.environ['ftn10'] = 'dNg_over_dt_cD6.dat'
+    os.environ['ftn20'] = 'HQ_AAcY.dat'
+    os.environ['ftn30'] = 'initial_HQ.dat'
+    run_cmd('./diffusion', str(args), cwd='diffusion')
+
+
+def run_fragPLUSrecomb():
+    os.environ['ftn20'] = 'Dmeson_AAcY.dat'
+    child1 = 'cat HQ_AAcY.dat'
+    p1 = subprocess.Popen(child1.split(), stdout = subprocess.PIPE)
+    p2 = subprocess.Popen('./fragPLUSrecomb', stdin = p1.stdout)
+    p1.stdout.close()
+    output = p2.communicate()[0]
+
+
+def participant_plane_angle():
+    initialFile = 'initial_mid.dat'
+    pp_angleFile = 'pp_angle.dat'
+    ed = np.loadtxt(initialFile)
+    x_init = np.linspace(-13, 13, 261)
+    y_init = np.linspace(-13, 13, 261)
+    rx0, ry0 = np.meshgrid(x_init, y_init)
+    x0 = np.sum(rx0 * ed) / np.sum(ed)
+    y0 = np.sum(ry0 * ed) / np.sum(ed)
+    rx = rx0 - x0
+    ry = ry0 - y0
+
+    r = np.sqrt(rx*rx + ry*ry)
+    phi = np.arctan2(ry, rx)
+    aver_cos = np.sum(r**2 * np.cos(2*phi) * ed) / np.sum(ed)
+    aver_sin = np.sum(r**2 * np.sin(2*phi) * ed) / np.sum(ed)
+
+    psi = 0.5 * np.arctan2(aver_sin, aver_cos)
+    pp_cos = np.cos(2*psi)
+    pp_sin = np.sin(2*psi)
+
+    astring = '{}   {}'.format(str(pp_cos), str(pp_sin))
+    f = open(pp_angleFile, 'w')
+    f.write(astring)
+    f.close()
+
+
+def bmsap_multi(collision_sys):
+    sampleFile = 'sample_multi.in'
+    if collision_sys == 'PbPb5020':
+        spectraFile = 'spectra/LHC5020-AA2ccbar.dat'
+    elif collision_sys == 'pPb5020':
+        spectraFile = 'spectra/LHC5020-pA2ccbar.dat'
+
+
+    multiFile = 'multi_AAcY.dat'
+    DmesonFile = 'Dmeson_AAcY.dat'
+    os.environ['ftn09'] = sampleFile
+    os.environ['ftn10'] = spectraFile
+    os.environ['ftn13'] = multiFile
+
+    child2 = 'cat ' + DmesonFile
+    p3 = subprocess.Popen(child2.split(), stdout = subprocess.PIPE)
+    p4 = subprocess.Popen('./bmsap', stdin = p3.stdout)
+    p3.stdout.close()
+    output = p4.communicate()[0]
+
+
+
+def bmsap_v2(collision_sys):
+    sampleFile = 'sample.in'
+    if collision_sys == 'PbPb5020':
+        spectraFile = 'spectra/LHC5020-AA2ccbar.dat'
+    elif collision_sys == 'pPb5020':
+        spectraFile = 'spectra/LHC5020-pA2ccbar.dat'
+
+    v2File = 'v2_AAcY.dat'
+    DmesonFile = 'Dmeson_AAcY.dat'
+    angleFile = 'pp_angle.dat'
+    os.environ['ftn09'] = sampleFile
+    os.environ['ftn10'] = spectraFile
+    os.environ['ftn13'] = v2File
+    os.environ['ftn24'] = angleFile
+
+    child3 = 'cat ' + DmesonFile
+    p5 = subprocess.Popen(child3.split(), stdout = subprocess.PIPE)
+    p6 = subprocess.Popen('./bmsap', stdin = p5.stdout)
+    p5.stdout.close()
+    output = p6.communicate()[0]
+
+
+def run_afterburner(ievent):
     """
     particalization + UrQMD afterburner
-    input: ievent (int); hrg (HRG class object)
-    output: urqmd_inputFile (Results/urqmd_initial${ievent}.dat)
-            urqmd_outputFile (Results/urqmd_final${ievent}.dat)
-    return: nsamples
+    input: sampler/surface.dat
+    output: urqmd_inputFile (urqmd/urqmd_initi.dat)
+    return nsamples (number of oversampled urqmd evets)
     """
-    if not os.path.exists('Results/'):
-        os.makedirs('Results')
-        
-    surfaceFile = 'freezeout/{}/freezeout.dat'.format(ievent)
-    # now particalize the hypersurface
+    surfaceFile = 'urqmd-afterburner/freezeout.dat'
+    eventinfo_File = 'urqmd-afterburner/{0}.event.info'.format(ievent)
+
     if os.stat(surfaceFile).st_size == 0:
         print('empty hypersurface')
         return 0
 
-    urqmd_inputFile = 'Results/urqmd_initial{}.dat'.format(ievent)
-    urqmd_outputFile = 'Results/urqmd_final{}.dat'.format(ievent)
+    light_inputFile = 'urqmd-afterburner/oscar.dat'.format(ievent)
+    urqmd_outputFile = 'urqmd-afterburner/urqmd_final{}.dat'.format(ievent)
 
-
-    t,x,y,z, dsigmat,dsigmax,dsigmay,dsigmaz, vx,vy,vz = np.loadtxt(surfaceFile).T[:11]
+    t,x,y,z,dst,dsx,dsy,dsz,vx,vy,vz = np.loadtxt(surfaceFile).T[:11]
     position_vec = np.array([t, x, y, z]).T
-    normal_vec = np.array([dsigmat, dsigmax, dsigmay, dsigmaz]).T
+    normal_vec = np.array([dst, dsx, dsy, dsz]).T
     velocity_vec = np.array([vx, vy, vz]).T
 
     surface = frzout.Surface(position_vec, normal_vec, velocity_vec)
-    minsamples, maxsamples = 1, 100 # reasonable range for nsamples
-    minparts = 10**5    # min numbers of particles to be sampled
-    nparts = 0  # in order to track total number of sampled particles
+    hrg = frzout.HRG(0.154, species='urqmd', res_width=False)
+    minsamples, maxsamples = 1, 100
+    minparts = 10**5
+    nparts = 0
 
-    with open(urqmd_inputFile, 'w') as f:
-        for nsamples in range(1, maxsamples + 1):
+    with open(light_inputFile, 'w') as f:
+        for nsamples in range(1, maxsamples+1):
             parts = frzout.sample(surface, hrg)
             if parts.size == 0:
                 continue
             nparts += parts.size
-            print("# ", parts.size, file = f)
+            print('# ', parts.size, file=f)
             for p in parts:
-                print(p['ID'], *chain(p['x'], p['p']), file = f)
-            if nparts >= minparts and nsamples >= minsamples:
+                print(p['ID'], *chain(p['x'], p['p']), file=f)
+
+            if nparts >= minparts:
                 break
-    run_cmd('./afterburner ', urqmd_inputFile, urqmd_outputFile)
+
+    run_cmd('./afterburner {} urqmd_final.dat'.format(nsamples), cwd='urqmd-afterburner')
     return nsamples
 
-def preprocess_data(ievent, nsamples):
-    """
-    preprocessing data and save in result${jobID}.hdf5 file
-    input: ievent (int); nsamples (int) tot.# of oversamples in the hypersurface
-    output: processed light/charged hadron data
-    """
-    urqmd_outputFile = 'Results/urqmd_final{}.dat'.format(ievent)
 
-    resultFile = 'result{}.hdf5'.format(jobID)
-    fres = h5py.File(resultFile, 'a')
-    group = fres.create_group('event{}'.format(ievent))
+def calculate_Dmeson_Raa(collision_sys, ID, px, py, initial_pT):
+    if os.path.isdir('spectra'):
+        spectraFolder = './spectra/'
+    else:
+        spectraFolder = './'
 
-    infoFile = 'IC/{}.event.info'.format(ievent)
+    if collision_sys == 'PbPb5020':
+        spectraFile = spectraFolder + 'LHC5020-AA2ccbar.dat'
+    elif collision_sys == 'pPb5020':
+        spectraFile = spectraFolder + 'LHC5020-pA2ccbar.dat'
+
+    pT_AA, dsigmadpT2_AA = np.loadtxt(spectraFile, unpack=True)
+    dsigmadpT_AA = pT_AA * dsigmadpT2_AA
+    sigma_AA = dsigmadpT_AA.sum() * (pT_AA[1] - pT_AA[0])
+    dsigmadpT_AA = dsigmadpT_AA/sigma_AA
+    dfdpT = interp1d(pT_AA, dsigmadpT_AA)
+
+    final_pT = np.sqrt(px**2 + py**2)
+    pT_weight = dfdpT(initial_pT)
+
+    ID_labels = [411, 421, 413, 423, 10411]
+    Raa_result = []
+    pT_weight = dfdpT(initial_pT)
+    dNdpT, pT_bins = np.histogram(final_pT, bins=140, range=(0, 70.0), weights = pT_weight)
+    Raa_result.append(pT_bins[:-1])
+    Raa_result.append(dNdpT)
+
+    for label in ID_labels:
+        initial_pT_label = initial_pT[ID == label]
+        final_pT_label = final_pT[ID==label]
+        if (len(initial_pT_label)  > 0):
+            pT_weight = dfdpT(initial_pT_label)
+            dNdpT_, pT_bins = np.histogram(final_pT_label, bins=140, range=(0, 70.0), weights = pT_weight)
+            Raa_result.append(dNdpT_)
+
+    return np.array(Raa_result).T
+
+
+
+def calculate_Dmeson_v2_EP(collision_sys, ID, px, py, initial_pT):
+    if os.path.isdir('spectra'):
+        spectraFolder = './spectra/'
+    else:
+        spectraFolder = './'
+
+    if collision_sys == 'PbPb2760':
+        spectraFile = spectraFolder + 'LHC2760-AA2ccbar.dat'
+    elif collision_sys == 'PbPb5020':
+        spectraFile = spectraFolder + 'LHC5020-AA2ccbar.dat'
+    elif collision_sys == 'AuAu200':
+        spectraFile = spectraFolder + 'RHIC200-AA2ccbar.dat'
+    else:
+        print(collision_sys, ' currently not implemented!')
+
+    pT_AA, dsigmadpT2_AA = np.loadtxt(spectraFile, unpack=True)
+    dsigmadpT_AA = pT_AA * dsigmadpT2_AA
+    sigma_AA = dsigmadpT_AA.sum() * (pT_AA[1] - pT_AA[0])
+    dsigmadpT_AA = dsigmadpT_AA / sigma_AA
+    dfdpT = interp1d(pT_AA, dsigmadpT_AA)
+
+    final_pT = np.sqrt(px**2 + py**2)
+    pT_weight = dfdpT(initial_pT)
+
+    if os.path.isfile('pp_angle.dat'):
+        angle_ = np.loadtxt('pp_angle.dat')
+        pp_cos = angle_[0]
+        pp_sin = angle_[1]
+    else:
+        pp_cos = 1
+        pp_sin = 0
+
+    final_v2 = ((py**2 - px**2)*pp_cos + 2.*(px*py*pp_sin)) / (final_pT**2)
+    final_v2_with_weight = final_v2 * pT_weight
+
+    v2_result = []
+    pT_bins = np.linspace(0.0, 70.0, 141)
+    v2_result.append(pT_bins[:-1])
+
+    dum_v2 = []
+    dum_weight = []
+    for i in range(len(pT_bins) -1):
+        cut = (final_pT > pT_bins[i]) & (final_pT < pT_bins[i+1])
+        v2_sum = final_v2_with_weight[cut].sum()
+        weight_sum = pT_weight[cut].sum()
+        try:
+            dum_v2.append(v2_sum/weight_sum)
+        except ZeroDivisionError:
+            dum_v2.append(0)
+        dum_weight.append(weight_sum)
+
+    v2_result.append(np.array(dum_v2))
+    v2_result.append(np.array(dum_weight))
+
+
+    ID_labels = [411, 421, 413, 423, 10411]
+    for label in ID_labels:
+        if len(ID[ID==label]) >0:
+            dum_v2 = []
+            dum_weight = []
+            for i in range(len(pT_bins) -1):
+                cut = (final_pT > pT_bins[i]) & (final_pT < pT_bins[i+1]) & (ID == label)
+                v2_sum = final_v2_with_weight[cut].sum()
+                weight_sum = pT_weight[cut].sum()
+                try:    
+                    dum_v2.append(v2_sum/weight_sum)
+                except ZeroDivisionError:
+                    dum_v2.append(0)
+                dum_weight.append(weight_sum)
+
+            v2_result.append(np.array(dum_v2))
+            v2_result.append(np.array(dum_weight))
+    
+    return np.array(v2_result).T
+
+
+
+def calculate_Dmeson_v2_cumulant(collision_sys, ID, px, py, phi, initial_pT):
+    if os.path.isdir('spectra'):
+        spectraFolder = './spectra/'
+    else:
+        spectraFolder = './'
+
+    if collision_sys == 'PbPb2760':
+        spectraFile = spectraFolder + 'LHC2760-AA2ccbar.dat'
+    elif collision_sys == 'PbPb5020':
+        spectraFile = spectraFolder + 'LHC5020-AA2ccbar.dat'
+    elif collision_sys == 'AuAu200':
+        spectraFile = spectraFolder + 'RHIC200-AA2ccbar.dat'
+    else:
+        print(collision_sys, ' currently not implemented!')
+
+    pT_AA, dsigmadpT2_AA = np.loadtxt(spectraFile, unpack=True)
+    dsigmadpT_AA = pT_AA * dsigmadpT2_AA
+    sigma_AA = dsigmadpT_AA.sum() * (pT_AA[1] - pT_AA[0])
+    dsigmadpT_AA = dsigmadpT_AA / sigma_AA
+    dfdpT = interp1d(pT_AA, dsigmadpT_AA)
+
+    final_pT = np.sqrt(px**2 + py**2)
+    pT_weight = dfdpT(initial_pT)
+
+    if os.path.isfile('pp_angle.dat'):
+        angle_ = np.loadtxt('pp_angle.dat')
+        pp_cos = angle_[0]
+        pp_sin = angle_[1]
+    else:
+        pp_cos = 1
+        pp_sin = 0
+
+    final_v2 = ((py**2 - px**2)*pp_cos + 2.*(px*py*pp_sin)) / (final_pT**2)
+    final_v2_with_weight = final_v2 * pT_weight
+
+    v2_result = []
+    pT_bins = np.linspace(0.0, 70.0, 141)
+    v2_result.append(pT_bins[:-1])
+
+    dum_q2 = []
+    dum_q3 = []
+    dum_q4 = []
+    dum_mD = []
+    for i in range(len(pT_bins) -1):
+        cut = (final_pT > pT_bins[i]) & (final_pT < pT_bins[i+1])
+        phi_Dmeson = phi[cut]
+        pT_weight_Dmeson = pT_weight[cut]
+        q2 = (np.exp(1j*2*phi_Dmeson) * pT_weight_Dmeson).sum()
+        q3 = (np.exp(1j*3*phi_Dmeson) * pT_weight_Dmeson).sum()
+        q4 = (np.exp(1j*4*phi_Dmeson) * pT_weight_Dmeson).sum()
+        mD = pT_weight_Dmeson.sum()
+
+        dum_q2.append(q2)
+        dum_q3.append(q3)
+        dum_q4.append(q4)
+        dum_mD.append(mD)
+
+    v2_result.append(np.array(dum_q2))
+    v2_result.append(np.array(dum_q3))
+    v2_result.append(np.array(dum_q4))
+    v2_result.append(np.array(dum_mD))
+
+    return np.array(v2_result).T
+
+
+ 
+def calculate_Dmeson_dNdydpT(collision_sys, px, py, initial_pT):
+    if os.path.isdir('spectra'):
+        spectraFolder = './spectra/'
+    else:
+        spectraFolder = './'
+
+    if collision_sys == 'PbPb2760':
+        spectraFile = spectraFolder + 'LHC2760-AA2ccbar.dat'
+    elif collision_sys == 'PbPb5020':
+        spectraFile = spectraFolder + 'LHC5020-AA2ccbar.dat'
+    elif collision_sys == 'AuAu200':
+        spectraFile = spectraFolder + 'RHIC200-AA2ccbar.dat'
+    else:
+        print(collision_sys, ' currently not implemented!')
+
+    pT_AA, dsigmadpT2_AA = np.loadtxt(spectraFile, unpack=True)
+    dsigmadpT_AA = pT_AA * dsigmadpT2_AA
+    sigma_AA = dsigmadpT_AA.sum() * (pT_AA[1] - pT_AA[0])
+    dsigmadpT_AA = dsigmadpT_AA / sigma_AA
+    dfdpT = interp1d(pT_AA, dsigmadpT_AA)
+
+    final_pT = np.sqrt(px**2 + py**2)
+    pT_weight = dfdpT(initial_pT)
+
+    dNdpT, pT_bins = np.histogram(final_pT, bins=140, range=(0.0, 70.0), weights=pT_weight)
+    return dNdpT, pT_bins[:-1]
+
+
+def calculate_Dmeson_beforeUrQMD(collision_sys, ievent, DmesonFile):
+    ID, px, py, pz, p0, ipT = read_oscar_file(DmesonFile)
+    abs_ID = np.abs(ID)
+    y = 0.5 * np.log((p0+pz)/(p0-pz))
+    resultFile = 'result_Dmeson_beforeUrQMD.hdf5'
+    fres = h5py.File(resultFile, 'w')
+   
+    #----------light hadron -------------------------------------
+    group_light = fres.create_group('light hadron')
+    infoFile = '../urqmd-afterburner/{}.event.info'.format(ievent)
+    i = 2
     with open(infoFile, 'r') as finfo:
         for line in finfo:
             inputline = line.split()
             if len(inputline) == 4:
-                group.attrs.create(inputline[1], float(inputline[3]))
-            
-    ID, charge, pT, phi, y, eta = (
-        np.array(col, dtype=dtype) for (col, dtype) in 
-        zip(
-            zip(*read_text_file(urqmd_outputFile)),
-            (2*[int] + 4*[float])
-        )
-    )
-        
-    species = [('pion',211), ('kaon', 321), ('proton', 2212)]
+                if group_light.attrs.get(inputline[0], 0) == 0:
+                    group_light.attrs.create(inputline[0], float(inputline[3]))
+                else:
+                    i += 1
+                    group_light.attrs.create(inputline[0] + str(i), float(inputline[3]))
 
-    charged = (charge != 0)
-    midrapidity = (np.fabs(eta) < 0.5)
-    cenkey = (np.fabs(eta) < 0.8)
+    initialFile = 'initial_mid.dat'
+    dum_sd = np.loadtxt(initialFile)
+    dum_weight = (dum_sd*dum_sd).sum()
+    group_light.attrs.create('weight-TAA', dum_weight)
 
-    group.attrs.create('nsamples', nsamples)
-    # dNch_deta
-    H, bins = np.histogram(eta[charged], range=(-5, 5), bins=50)
-    dNch_deta = H/(bins[1] - bins[0]) / nsamples
-    dataset_multi = group.create_dataset('dNch_deta', data = dNch_deta)
-    dataset_multi.attrs.create('mid_dNch_deta', np.count_nonzero(midrapidity & charged) / nsamples)
-    dataset_multi.attrs.create('cen_key', np.count_nonzero(cenkey & charged) / nsamples)
+ 
+    #---------- Dmeson midrapidity ---------------
+    group_Dmeson = fres.create_group('Dmeson')
+    midrapidity = (np.fabs(y) < 0.5)
+    ID_Dmeson = ID[midrapidity]
+    px_Dmeson = px[midrapidity]
+    py_Dmeson = py[midrapidity]
+    ipT_Dmeson = ipT[midrapidity]
 
-    # integrated flow cumulants
-    phi_ALICE = phi[charged & (np.fabs(eta)<0.8) & (pT>0.2) & (pT<5.0)]
-    flow_Qn = [np.exp(1j*n*phi_ALICE).sum() for n in range(1,7)]
-    dataset_flow = group.create_dataset('integrated_flow', data = flow_Qn)
-    dataset_flow.attrs.create('M', np.count_nonzero(phi_ALICE))
+    Raa_result = calculate_Dmeson_Raa(collision_sys,ID_Dmeson,px_Dmeson, py_Dmeson, ipT_Dmeson)
+    group_Dmeson.create_dataset('multi_Dmeson_y_lt_0d5', data = Raa_result)
+    v2_result =calculate_Dmeson_v2_EP(collision_sys, ID_Dmeson, px_Dmeson, py_Dmeson, ipT_Dmeson)
+    group_Dmeson.create_dataset('v2_Dmeson_y_lt_0d5_EP', data = v2_result)
+    
+    #---------- Dmeson dNdpTdy------------------
+    y_bins = np.linspace(-3.0,3.0,61)
+    Raa_result = []
+    for i in range(len(y_bins) -1):
+        cut = (y > y_bins[i]) & (y < y_bins[i+1])
+        px_Dmeson = px[cut]
+        py_Dmeson = py[cut]
+        ipT_Dmeson = ipT[cut]
+        dNdpT, _ = calculate_Dmeson_dNdydpT(collision_sys, px_Dmeson, py_Dmeson, ipT_Dmeson)
+        if len(Raa_result) == 0:
+            Raa_result.append(_)
+        Raa_result.append(dNdpT)
+    
+    ds_multi = group_Dmeson.create_dataset('multi_Dmeson_dNdy', data=np.array(Raa_result).T)
+    ds_multi.attrs.create('ymin', -3.0)
+    ds_multi.attrs.create('ymax', 3.0)
+    ds_multi.attrs.create('dy', 0.1)
+
+    fres.close()
+
+
+
+def calculate_Dmeson_afterUrQMD(collision_sys, ievent, nsamples):
+    urqmd_outputFile = 'urqmd_final.dat'
+    resultFile = 'result_afterUrQMD.hdf5'.format(ievent)
+    fres = h5py.File(resultFile, 'w')
+    group_Dmeson = fres.create_group('Dmeson')
+
+    ID, charge, px, py, pz, y, eta, ipT = read_text_file(urqmd_outputFile)
+    pT = np.sqrt(px**2 + py**2)
+    phi = np.arctan2(py, px)
+
+    abs_ID = np.abs(ID)
+    Dmeson_ID = ((abs_ID == 411) | (abs_ID == 421) | (abs_ID == 10411) | (abs_ID == 10421))
+    group_Dmeson.attrs.create('NDmeson', np.count_nonzero(Dmeson_ID))
+
+    
+    def write_rapidity(ycut):
+        midrapidity = (np.fabs(y) < ycut)
+        ID_Dmeson = abs_ID[Dmeson_ID & midrapidity]
+        px_Dmeson = px[Dmeson_ID & (midrapidity)]
+        py_Dmeson = py[Dmeson_ID & midrapidity]
+        ipT_Dmeson = ipT[Dmeson_ID & midrapidity]
+        phi_Dmeson = phi[Dmeson_ID & midrapidity]
+
+        Raa_result = calculate_Dmeson_Raa(collision_sys,ID_Dmeson,px_Dmeson,py_Dmeson,ipT_Dmeson)
+        ds_multi = group_Dmeson.create_dataset('multi_Dmeson_y_lt_%s'%ycut, data = Raa_result)
+        v2_result = calculate_Dmeson_v2_EP(collision_sys, ID_Dmeson, px_Dmeson, py_Dmeson, ipT_Dmeson)
+        ds_v2 = group_Dmeson.create_dataset('v2_Dmeson_y_lt_%s_EP'%ycut, data = v2_result)
+        v2_result2 = calculate_Dmeson_v2_cumulant(collision_sys, ID_Dmeson, px_Dmeson, py_Dmeson, phi_Dmeson, ipT_Dmeson)
+        group_Dmeson.create_dataset('vn_Dmeson_y_lt_%s_cumulant'%ycut, data=v2_result2)
+
+    write_rapidity(0.5)
+    write_rapidity(0.8)
+    write_rapidity(1.0)
+
+
+    #---------- Dmeson dNdpTdy------------------
+    y_bins = np.linspace(-3.0,3.0,61)
+    Raa_result = []
+    for i in range(len(y_bins) -1):
+        cut = ((y > y_bins[i]) & (y < y_bins[i+1]) & Dmeson_ID)
+        px_Dmeson = px[cut]
+        py_Dmeson = py[cut]
+        ipT_Dmeson = ipT[cut]
+        dNdpT, _ = calculate_Dmeson_dNdydpT(collision_sys, px_Dmeson, py_Dmeson, ipT_Dmeson)
+        if len(Raa_result) == 0:
+            Raa_result.append(_)
+        Raa_result.append(dNdpT)
+
+    ds_multi = group_Dmeson.create_dataset('multi_Dmeson_dNdy', data = np.array(Raa_result).T)
+    ds_multi.attrs.create('y_min', -3.0)
+    ds_multi.attrs.create('y_max', 3.0)
+    ds_multi.attrs.create('dy', 0.1)
+
+
+
+#------------light hadron------------------------------
+    group_light = fres.create_group('light hadron')
+    infoFile = '{}.event.info'.format(ievent)
+    i = 2
+    with open(infoFile, 'r') as finfo:
+        for line in finfo:
+            inputline = line.split()
+            if len(inputline) == 4:
+                if group_light.attrs.get(inputline[0], 0) == 0:
+                    group_light.attrs.create(inputline[0], float(inputline[3]))
+                else:
+                    i += 1
+                    group_light.attrs.create(inputline[0]+str(i), float(inputline[3]))
+
+    initialFile = 'initial_mid.dat'
+    dum_sd = np.loadtxt(initialFile)
+    dum_weight = (dum_sd*dum_sd).sum()
+    group_light.attrs.create('weight-TAA', dum_weight)
+
+    #--------------------------------------------------------------------
+    ID, charge, px, py, pz, y, eta, ipT = read_text_file(urqmd_outputFile)
+    pT = np.sqrt(px**2 + py**2)
+    phi = np.arctan2(py,px)
+
+    abs_ID = np.abs(ID)
+    abs_eta = np.fabs(eta)
+    ID_light = ((abs_ID !=411) & (abs_ID!=421) & (abs_ID !=10411) & (abs_ID != 10421))
+    charged = ((charge != 0) & ID_light)
+
+    group_light.attrs.create('nsamples', nsamples)
+    ## dNch_deta
+    H, bins = np.histogram(eta[charged], range=(-5,5), bins=100)
+    dNch_deta = H / nsamples / (bins[1] - bins[0])
+    dataset_dNchdeta = group_light.create_dataset('dNch_deta', data=dNch_deta)
+    dataset_dNchdeta.attrs.create('etamin', -5)
+    dataset_dNchdeta.attrs.create('etamax', 5)
+    dataset_dNchdeta.attrs.create('deta', 0.1)
+    dataset_dNchdeta.attrs.create('Nch_eta_lt_0d5', np.count_nonzero((abs_eta < 0.5) & charged)/nsamples)
+    dataset_dNchdeta.attrs.create('Nch_eta_lt_0d8', np.count_nonzero((abs_eta < 0.8) & charged)/nsamples)
+
+    ## dN_dy, mean_pT
+    species = [('pion', 211), ('kaon',321), ('proton', 2212)]
     for name, i in species:
-        cut = (np.abs(ID) == i) & midrapidity
+        cut = (abs_ID == i) & (np.fabs(y) < 0.5)
         N = np.count_nonzero(cut)
-        dataset_flow.attrs.create('dNdy-%s'%name, N/nsamples)
-        if N == 0:
+        dataset_dNchdeta.attrs.create('dNdy-%s'%name, 1.*N/nsamples)
+        if N==0:
             mean_pT = 0
         else:
             mean_pT = pT[cut].mean()
-        dataset_flow.attrs.create('mean-pT-%s'%name, mean_pT)
-        
-    # differential flow
-    pT_bin = np.linspace(0.2, 5, 25)
+        dataset_dNchdeta.attrs.create('mean-pT-%s'%name, mean_pT)
+
+    ## diff flow cumulants
+    pT_bins = np.linspace(0.2, 5, 25)
     diff_Q2 = []
     diff_Q3 = []
+    diff_Q4 = []
     diff_M = []
-    for i in range(len(pT_bin) -1):
-        diff_cut = (charged & (np.fabs(eta)<0.8) & (pT>pT_bin[i]) & (pT < pT_bin[i+1]))
+    for i in range(len(pT_bins) -1):
+        diff_cut = (charged & (abs_eta < 0.8) & (pT > pT_bins[i]) & (pT < pT_bins[i+1]))
         q2 = np.exp(1j*2*phi[diff_cut]).sum()
         q3 = np.exp(1j*3*phi[diff_cut]).sum()
+        q4 = np.exp(1j*4*phi[diff_cut]).sum()
         m_ = np.count_nonzero(phi[diff_cut])
         diff_Q2.append(q2)
         diff_Q3.append(q3)
+        diff_Q4.append(q4)
         diff_M.append(m_)
-    dataset_diff_flow = group.create_dataset('differential_flow', data=[diff_Q2,diff_Q3,diff_M])  
+    dataset_flow = group_light.create_dataset('differential_flow', data = [pT_bins[:-1], diff_Q2, diff_Q3, diff_Q4,diff_M])
+
+    ## integrated flow cumulants
+    phi_ALICE = phi[charged & (abs_eta < 0.8) & (pT > 0.2) & (pT < 5.0)]
+    flow_Qn_ALICE = [np.exp(1j*n*phi_ALICE).sum() for n in range(1,7)]
+
+    phi_ALICE_a = phi[charged & (eta < 0.8) & (eta > 0.0) & (pT > 0.2) & (pT < 5.0)]
+    flow_Qa_ALICE = [np.exp(1j*n*phi_ALICE_a).sum() for n in range(1,7)]
+ 
+    phi_ALICE_b = phi[charged & (eta < 0.) & (eta > -0.8) & (pT > 0.2) & (pT < 5.0)]
+    flow_Qb_ALICE = [np.exp(1j*n*phi_ALICE_b).sum() for n in range(1,7)]
+
+    dataset_flow2 = group_light.create_dataset('integrated_flow', data = [range(1,7), flow_Qn_ALICE, flow_Qa_ALICE, flow_Qb_ALICE])
+    
+    dataset_flow2.attrs.create('integrated_M', np.count_nonzero(phi_ALICE))
+    dataset_flow2.attrs.create('integrated_Ma', np.count_nonzero(phi_ALICE_a))
+    dataset_flow2.attrs.create('integrated_Mb', np.count_nonzero(phi_ALICE_b))
+
     fres.close()
-   
 
 
-nevent = 10
-collision_sys = 'Pb Pb'
-beam_energy = 2760
-xy_max = 13.05
-ic_dxy = 0.1
-eta_max = 10.
-ic_deta = 0.2
-ic_nxy = int(xy_max*2/ic_dxy)
-ic_neta = int(eta_max*2/ic_deta) + 1
-print(ic_nxy, ic_neta)
 
-### step 1: parse the arguments
-if len(sys.argv) == 3:
-    with open(sys.argv[1], 'r') as fargs:
-        config = dict((i.strip() for i in l.split('=', maxsplit=1)) for l in fargs)
-        jobID = int(sys.argv[2])
-        if config['hydro_args'] != '':
-            config_args = config['hydro_args']
-            ivalue = dict()
-            for i in config_args.split():
-                ivalue[i.split('=')[0]] = i.split('=')[1]
-            config['hydro_args'] = ivalue
-    fargs.close()
-else:
-    config = {}
-    jobID = 0
 
-print(config.get('trento_args',''))
-print(config.get('hydro_args', {}))    
-    
 def main():
-    trento_args = config.get('trento_args', '')
-    ### step 2: run initial condition
-    run_initial(nevent,trento_args)
-    
-    ### step 3: run hydro and afterburner and dataprocessing
-    hydro_args = config.get('hydro_args', {})
-    Tswitch = float(hydro_args.get('Tswitch', 0.154))
-    hrg = frzout.HRG(Tswitch, species = 'urqmd', res_width = True)
-    eswitch = hrg.energy_density()
-    hydro_args['eswitch'] = eswitch
-    
-    for ievent in range(nevent):
-        run_hydro(ievent, hydro_args)
-        nsamples = run_afterburner(ievent, hrg)
-        if nsamples > 0:
-            preprocess_data(ievent, nsamples)
+    nevents = 2
+    condor_ID = sys.argv[1]
+    fargs = open('args.conf', 'r')
+    args = fargs.readline()
+    collision_sys = 'PbPb5020'
 
-if __name__ == "__main__":
+    run_initial(collision_sys, nevents)
+
+    for ievent in range(nevents):
+        postfix = '{}-{}.dat'.format(condor_ID, ievent)
+        initialFile = 'trento3d/initial/{}.dat'.format(ievent)
+        initial_midFile = 'trento3d/initial/{}_mid.dat'.format(ievent)
+        initial_info_File = 'trento3d/initial/{}.event.info'.format(ievent)
+
+        shutil.move(initialFile, 'vhlle/initial.dat')
+        shutil.copyfile(initial_midFile, 'bmsap/initial_mid.dat')
+        shutil.copyfile(initial_midFile, 'HQ_sample/initial_mid.dat')
+        shutil.move(initial_info_File, 'urqmd-afterburner/{}.event.info'.format(ievent))
+
+        run_hydro()
+        shutil.move('vhlle/freezeout/freezeout.dat', 'urqmd-afterburner/freezeout.dat')
+        shutil.move('vhlle/freezeout/vHLLEMedium.h5', 'diffusion/vHLLEMedium.h5')
+
+        run_HQsample()
+        shutil.move('HQ_sample/initial_HQ.dat', 'diffusion/initial_HQ.dat')
+
+        run_diffusion(args)
+        shutil.move('diffusion/HQ_AAcY.dat', 'fragPLUSrecomb/HQ_AAcY.dat')
+
+        os.chdir('fragPLUSrecomb/')
+        run_fragPLUSrecomb()
+        os.chdir('../')
+        shutil.move('fragPLUSrecomb/Dmeson_AAcY.dat', 'bmsap/Dmeson_AAcY.dat')
+
+        os.chdir('bmsap/')
+        participant_plane_angle()
+        bmsap_multi(collision_sys)
+        bmsap_v2(collision_sys)
+        calculate_Dmeson_beforeUrQMD(collision_sys, ievent, 'Dmeson_AAcY.dat')
+
+        os.chdir('../')
+        shutil.move('bmsap/Dmeson_AAcY.dat', 'urqmd-afterburner/Dmeson_AAcY.dat')
+        shutil.move('bmsap/pp_angle.dat', 'urqmd-afterburner/pp_angle.dat')
+        shutil.move('bmsap/initial_mid.dat', 'urqmd-afterburner/initial_mid.dat')
+
+        nsamples = run_afterburner(ievent)
+        if nsamples != 0:
+            if not os.path.isfile('urqmd-afterburner/LHC2760-AA2ccbar.dat'):
+                shutil.copyfile('bmsap/spectra/LHC2760-AA2ccbar.dat', 'urqmd-afterburner/LHC2760-AA2ccbar.dat')
+                shutil.copyfile('bmsap/spectra/LHC5020-AA2ccbar.dat', 'urqmd-afterburner/LHC5020-AA2ccbar.dat')
+                shutil.copyfile('bmsap/spectra/RHIC200-AA2ccbar.dat', 'urqmd-afterburner/RHIC200-AA2ccbar.dat')
+            os.chdir('urqmd-afterburner/')
+            calculate_Dmeson_afterUrQMD(collision_sys, ievent, nsamples)
+            # try to store the files (not neccessary to transfer those back)
+            shutil.move('urqmd_final.dat', 'urqmd_final{}-{}.dat'.format(condor_ID, ievent))
+            shutil.move('Dmeson_AAcY.dat', 'Dmeson_AAcY{}-{}.dat'.format(condor_ID, ievent))
+            shutil.move('oscar.dat', 'oscar{}-{}.dat'.format(condor_ID, ievent))
+            shutil.move('urqmd_input.dat', 'urqmd_input{}-{}.dat'.format(condor_ID, ievent))
+
+            os.chdir('../')
+            shutil.move('urqmd-afterburner/result_afterUrQMD.hdf5', 'results/result_afterUrQMD{}-{}.hdf5'.format(condor_ID, ievent))
+            shutil.move('bmsap/multi_AAcY.dat', 'results/multi_AAcY{}-{}.dat'.format(condor_ID, ievent))
+            shutil.move('bmsap/v2_AAcY.dat', 'results/v2_AAcY{}-{}.dat'.format(condor_ID, ievent))
+            shutil.move('bmsap/result_Dmeson_beforeUrQMD.hdf5', 'results/result_Dmeson_beforeUrQMD{}-{}.hdf5'.format(condor_ID, ievent))
+        else:
+            print('No particle produced in this event!')
+            continue
+
+
+if __name__ == '__main__':
     main()

@@ -35,7 +35,7 @@ if [[ $(hostname) == 'xd-login.opensciencegrid.org' ]]; then
 fi
 
 
-pkgname='hic_3D'
+pkgname='hic_3D-osg'
 #destdir='${1-.}'
 
 # create a temporary directory for installing files
@@ -73,7 +73,7 @@ for i in models/*/; do
 done
 
 # install the event runner script
-mkdir $pkgdir/Results/
+mkdir $pkgdir/results/
 cp models/run-events $pkgdir/
 
 # create tgz for distributing to each job
