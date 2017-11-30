@@ -19,7 +19,7 @@ import shutil
 from scipy.interpolate import interp1d
 
 # load libries distributed with hic-osg
-sys.path.insert(1, './lib64/python3.5/site-packages/')
+sys.path.insert(1, './lib/python3.5/site-packages/')
 import frzout
 
 def run_cmd(*args, **kwargs):
@@ -68,15 +68,25 @@ def read_oscar_file(fileName):
 
 
 def run_initial(collision_sys, nevents):
-    if collision_sys == 'PbPb5020':
+    if collision_sys == 'PbPb2760':
         run_cmd('./trento3d Pb Pb', str(nevents),
-            '--beam-energy 5020',
-            '--reduced-thickness 0.0 --fluctuation 2.0 --nucleon-width 0.59 --normalization 15.0',
+            '--beam-energy 2760',
+            '--reduced-thickness 0.0 --fluctuation 2.0 --nucleon-width 0.59 --normalization 132.0',
             '--mean-coeff 0.0 --std-coeff 2.9 --skew-coeff 7.3 --jacobian 0.75',
             '--xy-max 13.05 --xy-step 0.1',
             '--eta-max 10.0 --eta-step 0.2',
             '--output initial', cwd='trento3d'
         )
+    elif collision_sys == 'pPb5020':
+        run_cmd('./trento3d p Pb', str(nevents),
+            '--beam-energy 5020',
+            '--reduced-thickness 0.0 --fluctuation 2.0 --nucleon-width 0.59 --normalization 150.0',
+            '--mean-coeff 0.0 --std-coeff 2.9 --skew-coeff 7.3 --jacobian 0.75',
+            '--xy-max 13.05 --xy-step 0.1',
+            '--eta-max 10.0 --eta-step 0.2',
+            '--output initial', cwd='trento3d'
+        )
+
 
 
 def run_hydro():
@@ -136,6 +146,8 @@ def bmsap_multi(collision_sys):
         spectraFile = 'spectra/LHC5020-AA2ccbar.dat'
     elif collision_sys == 'pPb5020':
         spectraFile = 'spectra/LHC5020-pA2ccbar.dat'
+    elif collision_sys == 'PbPb2760':
+        spectraFile = 'spectra/LHC2760-AA2ccbar.dat'
 
 
     multiFile = 'multi_AAcY.dat'
@@ -158,6 +170,8 @@ def bmsap_v2(collision_sys):
         spectraFile = 'spectra/LHC5020-AA2ccbar.dat'
     elif collision_sys == 'pPb5020':
         spectraFile = 'spectra/LHC5020-pA2ccbar.dat'
+    elif collision_sys == 'PbPb2760':
+        spectraFile = 'spectra/LHC2760-AA2ccbar.dat'
 
     v2File = 'v2_AAcY.dat'
     DmesonFile = 'Dmeson_AAcY.dat'
@@ -229,6 +243,8 @@ def calculate_Dmeson_Raa(collision_sys, ID, px, py, initial_pT):
         spectraFile = spectraFolder + 'LHC5020-AA2ccbar.dat'
     elif collision_sys == 'pPb5020':
         spectraFile = spectraFolder + 'LHC5020-pA2ccbar.dat'
+    elif collision_sys == 'PbPb2760':
+        spectraFile = spectraFolder + 'LHC2760-AA2ccbar.dat'
 
     pT_AA, dsigmadpT2_AA = np.loadtxt(spectraFile, unpack=True)
     dsigmadpT_AA = pT_AA * dsigmadpT2_AA
@@ -270,6 +286,8 @@ def calculate_Dmeson_v2_EP(collision_sys, ID, px, py, initial_pT):
         spectraFile = spectraFolder + 'LHC5020-AA2ccbar.dat'
     elif collision_sys == 'AuAu200':
         spectraFile = spectraFolder + 'RHIC200-AA2ccbar.dat'
+    elif collision_sys == 'pPb5020':
+        spectraFile = spectraFolder + 'LHC5020-pA2ccbar.dat'
     else:
         print(collision_sys, ' currently not implemented!')
 
@@ -347,6 +365,8 @@ def calculate_Dmeson_v2_cumulant(collision_sys, ID, px, py, phi, initial_pT):
         spectraFile = spectraFolder + 'LHC5020-AA2ccbar.dat'
     elif collision_sys == 'AuAu200':
         spectraFile = spectraFolder + 'RHIC200-AA2ccbar.dat'
+    elif collision_sys == 'pPb5020':
+        spectraFile = spectraFolder + 'LHC5020-pA2ccbar.dat'
     else:
         print(collision_sys, ' currently not implemented!')
 
@@ -413,6 +433,8 @@ def calculate_Dmeson_dNdydpT(collision_sys, px, py, initial_pT):
         spectraFile = spectraFolder + 'LHC5020-AA2ccbar.dat'
     elif collision_sys == 'AuAu200':
         spectraFile = spectraFolder + 'RHIC200-AA2ccbar.dat'
+    elif collision_sys == 'pPb5020':
+        spectraFile = spectraFolder + 'LHC5020-pA2ccbar.dat'
     else:
         print(collision_sys, ' currently not implemented!')
 
@@ -444,11 +466,11 @@ def calculate_Dmeson_beforeUrQMD(collision_sys, ievent, DmesonFile):
         for line in finfo:
             inputline = line.split()
             if len(inputline) == 4:
-                if group_light.attrs.get(inputline[0], 0) == 0:
-                    group_light.attrs.create(inputline[0], float(inputline[3]))
+                if group_light.attrs.get(inputline[1], 0) == 0:
+                    group_light.attrs.create(inputline[1], float(inputline[3]))
                 else:
                     i += 1
-                    group_light.attrs.create(inputline[0] + str(i), float(inputline[3]))
+                    group_light.attrs.create(inputline[1] + str(i), float(inputline[3]))
 
     initialFile = 'initial_mid.dat'
     dum_sd = np.loadtxt(initialFile)
@@ -459,6 +481,7 @@ def calculate_Dmeson_beforeUrQMD(collision_sys, ievent, DmesonFile):
     #---------- Dmeson midrapidity ---------------
     group_Dmeson = fres.create_group('Dmeson')
     midrapidity = (np.fabs(y) < 0.5)
+    #midrapidity = (y<0.04 & y > -0.96)
     ID_Dmeson = ID[midrapidity]
     px_Dmeson = px[midrapidity]
     py_Dmeson = py[midrapidity]
@@ -554,11 +577,11 @@ def calculate_Dmeson_afterUrQMD(collision_sys, ievent, nsamples):
         for line in finfo:
             inputline = line.split()
             if len(inputline) == 4:
-                if group_light.attrs.get(inputline[0], 0) == 0:
-                    group_light.attrs.create(inputline[0], float(inputline[3]))
+                if group_light.attrs.get(inputline[1], 0) == 0:
+                    group_light.attrs.create(inputline[1], float(inputline[3]))
                 else:
                     i += 1
-                    group_light.attrs.create(inputline[0]+str(i), float(inputline[3]))
+                    group_light.attrs.create(inputline[1]+str(i), float(inputline[3]))
 
     initialFile = 'initial_mid.dat'
     dum_sd = np.loadtxt(initialFile)
@@ -638,11 +661,11 @@ def calculate_Dmeson_afterUrQMD(collision_sys, ievent, nsamples):
 
 
 def main():
-    nevents = 2
+    nevents = 10
     condor_ID = sys.argv[1]
     fargs = open('args.conf', 'r')
     args = fargs.readline()
-    collision_sys = 'PbPb5020'
+    collision_sys = 'pPb5020'
 
     run_initial(collision_sys, nevents)
 
@@ -689,6 +712,7 @@ def main():
                 shutil.copyfile('bmsap/spectra/LHC2760-AA2ccbar.dat', 'urqmd-afterburner/LHC2760-AA2ccbar.dat')
                 shutil.copyfile('bmsap/spectra/LHC5020-AA2ccbar.dat', 'urqmd-afterburner/LHC5020-AA2ccbar.dat')
                 shutil.copyfile('bmsap/spectra/RHIC200-AA2ccbar.dat', 'urqmd-afterburner/RHIC200-AA2ccbar.dat')
+                shutil.copyfile('bmsap/spectra/LHC5020-pA2ccbar.dat', 'urqmd-afterburner/LHC5020-pA2ccbar.dat')
             os.chdir('urqmd-afterburner/')
             calculate_Dmeson_afterUrQMD(collision_sys, ievent, nsamples)
             # try to store the files (not neccessary to transfer those back)
